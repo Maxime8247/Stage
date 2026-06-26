@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Pilot 1 — Chelmsford</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+    
+    <style>
+        :root {
+            --bg:    #080d18;
+            --panel: rgba(8,13,24,0.93);
+            --border:rgba(96,165,250,0.15);
+            --accent:#60a5fa;
+            --text:  #cbd5e1;
+            --muted: #475569;
+            --road:  #94a3b8;
+            --river: #0ea5e9;
+            --safe:  #22c55e;
+            --flood: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: 'JetBrains Mono', monospace; color: var(--text); overflow: hidden; }
+        #map { width: 100vw; height: 100vh; }
+        .leaflet-container { background: #0d1220; }
+        .leaflet-tile { filter: brightness(0.45) saturate(0.5) hue-rotate(190deg); }
+        
+        .leaflet-control-zoom { border: 1px solid var(--border) !important; }
+        .leaflet-control-zoom a { background: var(--panel) !important; color: var(--accent) !important; border-color: var(--border) !important; }
+        .leaflet-popup-content-wrapper { background: var(--panel); border: 1px solid var(--border); color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; border-radius: 8px; }
+        .leaflet-popup-tip { background: var(--panel); }
+
+        .rain-zone {
+            fill: #3b82f6;
+            fill-opacity: 0.22;
+            stroke: #60a5fa;
+            stroke-width: 3;
+            stroke-dasharray: 6;
+        }
+
+        #header { position: absolute; top: 0; left: 0; right: 0; z-index: 1000; padding: 10px 18px; background: linear-gradient(to bottom, rgba(8,13,24,0.98) 60%, transparent); display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
+        #header h1 { font-family: 'Syne', sans-serif; font-size: 16px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+        #header h1 span { color: var(--flood); }
+        #api-status { font-size: 11px; display: flex; align-items: center; gap: 6px; }
+        .dot { width: 7px; height: 7px; border-radius: 50%; animation: pulse 2s infinite; }
+        .dot.ok  { background: var(--safe); }
+        .dot.err { background: var(--flood); }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        #left-panel { position: absolute; top: 55px; left: 14px; z-index: 1000; width: 270px; }
+        .pblock { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; backdrop-filter: blur(14px); margin-bottom: 8px; }
+        .pblock h3 { font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+        .sr { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .sr:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .sk { color: var(--muted); }
+        .sv { font-weight: 700; }
+        .blue { color: var(--accent); }
+        .cyan { color: var(--river); }
+        .gray { color: var(--road); }
+
+        .layer-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px; cursor: pointer; user-select: none; }
+        .ll { display: flex; align-items: center; gap: 8px; }
+
+        .toggle { width: 32px; height: 18px; background: var(--muted); border-radius: 9px; position: relative; transition: background 0.2s; flex-shrink: 0; }
+        .toggle.on { background: var(--accent); }
+        .toggle::after { content:''; position:absolute; width:12px; height:12px; background:white; border-radius:50%; top:3px; left:3px; transition:left 0.2s; }
+        .toggle.on::after { left:17px; }
+
+        button { background: rgba(96,165,250,0.1); border: 1px solid var(--border); border-radius: 6px; color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; padding: 7px 10px; cursor: pointer; transition: background 0.2s; width: 100%; margin-top: 8px; }
+        button:hover { background: rgba(96,165,250,0.22); }
+
+        #coords-bar { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 1000; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 5px 14px; font-size: 11px; color: var(--muted); pointer-events: none; white-space: nowrap; }
+        #coords-bar span { color: var(--accent); }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2000; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px 30px; font-size: 13px; color: var(--accent); display: none; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="loading">⏳ Chargement...</div>
+
+<div id="header">
+    <h1>Pilot 1 / <span>Chelmsford</span></h1>
+    <div id="api-status">
+        <div class="dot ok" id="status-dot"></div>
+        <span id="status-text">API connectée</span>
+    </div>
+</div>
+
+<div id="left-panel"></div>
+
+<div id="coords-bar">
+    lat <span id="c-lat">—</span> &nbsp; lng <span id="c-lng">—</span>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+<script>
+
+const API = 'http://localhost:3000';
+
+const map = L.map('map').setView([51.735, 0.47], 13);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+}).addTo(map);
+
+// ====================== ÉTAT ======================
+const state = {
+    roads:  { layer: null, active: false },
+    rivers: { layer: null, active: false },
+};
+
+let rainZoneLayer = null;
+let rainIntensity = 30; // Valeur initiale calée sur le slider (mm/h)
+let currentCircleRadius = 0;
+
+// ====================== FONCTIONS DE BASE ======================
+function getBbox() {
+    const b = map.getBounds();
+    return `minx=${b.getWest()}&miny=${b.getSouth()}&maxx=${b.getEast()}&maxy=${b.getNorth()}`;
+}
+
+function setStatus(ok, text) {
+    document.getElementById('status-dot').className = 'dot ' + (ok ? 'ok' : 'err');
+    document.getElementById('status-text').textContent = text;
+}
+
+function showLoading(text) {
+    const el = document.getElementById('loading');
+    el.innerHTML = text;
+    el.style.display = 'block';
+}
+function hideLoading() {
+    document.getElementById('loading').style.display = 'none';
+}
+
+// ====================== CHARGEMENT COUCHES ======================
+async function loadRoads() {
+    showLoading('⏳ Chargement des routes...');
+    try {
+        const res  = await fetch(`${API}/api/roads?${getBbox()}`);
+        const data = await res.json();
+        if (state.roads.layer) map.removeLayer(state.roads.layer);
+        
+        state.roads.layer = L.geoJSON(data, {
+            style: feature => {
+                const cls = JSON.stringify(feature.properties || '').toLowerCase();
+                if (cls.includes('motorway')) return { color: '#f59e0b', weight: 3, opacity: 0.9 };
+                if (cls.includes('a road'))   return { color: '#94a3b8', weight: 2, opacity: 0.8 };
+                if (cls.includes('b road'))   return { color: '#64748b', weight: 1.5, opacity: 0.7 };
+                return { color: '#334155', weight: 1, opacity: 0.6 };
+            },
+            onEachFeature: (feature, layer) => {
+                const p = feature.properties || {};
+                layer.bindPopup(`<b>${p.name1 || p.name || 'Route'}</b>`);
+            },
+        }).addTo(map);
+        
+        document.getElementById('stat-roads').textContent = (data.meta?.count ?? 0).toLocaleString('fr-FR');
+    } catch (err) {
+        setStatus(false, 'Erreur routes');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function loadRivers() {
+    showLoading("⏳ Chargement des cours d'eau...");
+    try {
+        const res  = await fetch(`${API}/api/rivers?${getBbox()}`);
+        const data = await res.json();
+        if (state.rivers.layer) map.removeLayer(state.rivers.layer);
+        
+        state.rivers.layer = L.geoJSON(data, {
+            style: { color: '#0ea5e9', weight: 2, opacity: 0.85 },
+            onEachFeature: (feature, layer) => {
+                const p = feature.properties || {};
+                layer.bindPopup(`<b>${p.name1 || p.name || "Cours d'eau"}</b>`);
+            },
+        }).addTo(map);
+        
+        document.getElementById('stat-rivers').textContent = (data.meta?.count ?? 0).toLocaleString('fr-FR');
+    } catch (err) {
+        setStatus(false, "Erreur cours d'eau");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ====================== SIMULATION PLUIE AVANCÉE (POSTGIS) ======================
+async function startRainSimulation() {
+    if (!rainZoneLayer) {
+        alert("❌ Ajoute ou dessine d'abord une zone de pluie !");
+        return;
+    }
+
+    const center = rainZoneLayer.getLatLng();
+    showLoading('☔ PostGIS calcule le buffer d\'inondation...');
+
+    // On réinitialise d'abord les styles pour effacer l'ancienne simulation
+    resetStyles();
+
+    try {
+        // Envoi des coordonnées et intensité à notre endpoint PostGIS
+        const response = await fetch(`${API}/api/simulate-rain`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                centerLng: center.lng,
+                centerLat: center.lat,
+                radiusMeters: currentCircleRadius,
+                intensity: rainIntensity
+            })
+        });
+
+        if (!response.ok) throw new Error("Erreur calcul API");
+        const result = await response.json();
+
+        // 1. Rivières dans le cercle de pluie -> Passage en bleu plus épais (weight: 6)
+        if (state.rivers.layer) {
+            const floodedRiverIds = new Set(result.rivers.map(r => r.id));
+            state.rivers.layer.eachLayer(layer => {
+                if (floodedRiverIds.has(layer.feature.properties.id)) {
+                    layer.setStyle({
+                        color: '#0055ff', // Bleu profond saturé
+                        weight: 6,         // Trait plus épais
+                        opacity: 1
+                    });
+                }
+            });
+        }
+
+        // 2. Routes touchées par le buffer des rivières -> Orange ou Rouge selon intensité
+        if (state.roads.layer) {
+            const floodedRoadsMap = new Map(result.roads.map(r => [r.id, r.flood_status]));
+            state.roads.layer.eachLayer(layer => {
+                if (floodedRoadsMap.has(layer.feature.properties.id)) {
+                    const status = floodedRoadsMap.get(layer.feature.properties.id);
+                    if (status === 'danger') {
+                        // Pluie ≥ 50 mm/h -> Rouge
+                        layer.setStyle({ color: '#ef4444', weight: 5, opacity: 1 });
+                    } else {
+                        // Pluie < 50 mm/h -> Orange
+                        layer.setStyle({ color: '#f59e0b', weight: 4, opacity: 0.9 });
+                    }
+                }
+            });
+        }
+
+        alert(`☔ Simulation PostGIS calculée ! \nRivières saturées épaissies. Routes impactées passées au style d'intensité (${rainIntensity} mm/h).`);
+
+    } catch (err) {
+        console.error("Erreur simulation:", err);
+        setStatus(false, 'Erreur simulation');
+    } finally {
+        hideLoading();
+    }
+}
+
+function resetStyles() {
+    // Force le rechargement/réapplication des styles d'origine
+    if (state.roads.active) loadRoads();
+    if (state.rivers.active) loadRivers();
+}
+
+function clearRain() {
+    if (rainZoneLayer) {
+        map.removeLayer(rainZoneLayer);
+        rainZoneLayer = null;
+    }
+    currentCircleRadius = 0;
+    document.getElementById('radius-info').textContent = "Rayon : — m";
+    resetStyles(); 
+    alert("✅ Zone de pluie et effets supprimés");
+}
+
+function triggerDrawCircle() {
+    new L.Draw.Circle(map, drawControl.options.draw.circle).enable();
+}
+
+// ====================== PANNEAU GAUCHE ======================
+const leftPanel = document.getElementById('left-panel');
+leftPanel.innerHTML = `
+    <div class="pblock">
+        <h3>Couches</h3>
+        <div class="layer-row" onclick="toggleLayer('roads', this)">
+            <div class="ll"><span>Routes</span></div>
+            <div class="toggle" id="tog-roads"></div>
+        </div>
+        <div class="layer-row" onclick="toggleLayer('rivers', this)">
+            <div class="ll"><span>Cours d'eau</span></div>
+            <div class="toggle" id="tog-rivers"></div>
+        </div>
+    </div>
+
+    <div class="pblock">
+        <h3>Simulation Pluie</h3>
+        <button onclick="triggerDrawCircle()" style="background: rgba(59,130,246,0.15); border-color: #3b82f6; color: #60a5fa; margin-bottom: 10px;">➕ Ajouter une zone de pluie</button>
+        
+        <div style="font-size:11px; margin-bottom:8px;">
+            Intensité : <span id="intensity-val" class="blue">${rainIntensity}</span> mm/h
+        </div>
+        <input type="range" id="rain-slider" min="10" max="100" value="30" style="width:100%; accent-color:var(--accent);">
+        <div id="radius-info" style="font-size:10px; color:var(--muted); margin-top:4px;">Rayon : — m</div>
+        <button onclick="startRainSimulation()" style="margin-top:10px;">☔ Lancer la Pluie</button>
+        <button onclick="clearRain()" style="background:rgba(148,163,184,0.1); margin-top:6px;">Effacer Zone</button>
+    </div>
+
+    <div class="pblock">
+        <h3>Statistiques</h3>
+        <div class="sr"><span class="sk">Routes</span><span class="sv gray" id="stat-roads">—</span></div>
+        <div class="sr"><span class="sk">Cours d'eau</span><span class="sv cyan" id="stat-rivers">—</span></div>
+        <div class="sr"><span class="sk">Zoom</span><span class="sv blue" id="stat-zoom">—</span></div>
+        <button onclick="reloadVisible()">↺ Recharger la vue</button>
+    </div>
+`;
+
+// Slider d'intensité (10 à 100 mm/h)
+document.getElementById('rain-slider').addEventListener('input', (e) => {
+    rainIntensity = parseInt(e.target.value);
+    document.getElementById('intensity-val').textContent = rainIntensity;
+});
+
+// ====================== CONFIGURATION DU MOTEUR DESSIN ======================
+const drawControl = new L.Control.Draw({
+    draw: {
+        circle: {
+            shapeOptions: {
+                color: '#60a5fa',
+                weight: 3,
+                fillColor: '#3b82f6',
+                fillOpacity: 0.22,
+                dashArray: "6"
+            }
+        },
+        polygon: false,
+        rectangle: false,
+        circlemarker: false,
+        marker: false,
+        polyline: false
+    }
+});
+map.addControl(drawControl);
+
+map.on(L.Draw.Event.CREATED, function (e) {
+    if (rainZoneLayer) map.removeLayer(rainZoneLayer);
+    
+    rainZoneLayer = e.layer;
+    currentCircleRadius = e.layer.getRadius(); 
+    document.getElementById('radius-info').textContent = `Rayon : ${Math.round(currentCircleRadius)} m`;
+    
+    map.addLayer(rainZoneLayer);
+});
+
+// ====================== AUTRES FONCTIONS ======================
+function toggleLayer(name, row) {
+    const s = state[name];
+    const tog = document.getElementById(`tog-${name}`);
+    s.active = !s.active;
+    tog.classList.toggle('on', s.active);
+    
+    if (s.active) {
+        name === 'roads' ? loadRoads() : loadRivers();
+    } else {
+        if (s.layer) map.removeLayer(s.layer);
+        s.layer = null;
+        document.getElementById(`stat-${name}`).textContent = '—';
+    }
+}
+
+function reloadVisible() {
+    if (state.roads.active)  loadRoads();
+    if (state.rivers.active) loadRivers();
+}
+
+map.on('mousemove', e => {
+    document.getElementById('c-lat').textContent = e.latlng.lat.toFixed(5);
+    document.getElementById('c-lng').textContent = e.latlng.lng.toFixed(5);
+});
+
+map.on('zoomend moveend', () => {
+    document.getElementById('stat-zoom').textContent = map.getZoom();
+    reloadVisible();
+});
+
+document.getElementById('stat-zoom').textContent = map.getZoom();
+
+// Test initial API
+fetch(`${API}/ping`)
+    .then(r => r.json())
+    .then(() => setStatus(true, 'API connectée'))
+    .catch(() => setStatus(false, 'API hors ligne'));
+
+</script>
+</body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Jumeau Numérique - Simulateur Pilot 2</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        html, body, #map {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        /* Style du bouton de contrôle du simulateur */
+        .sim-control {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+            text-align: center;
+        }
+        .sim-btn {
+            background: #2C3E50;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 3px;
+        }
+        .sim-btn:hover {
+            background: #34495E;
+        }
+        /* Style pour personnaliser le popup d'altitude */
+        .elevation-popup .leaflet-popup-content-wrapper {
+            background: #2c3e50;
+            color: #fff;
+        }
+        .elevation-popup .leaflet-popup-tip {
+            background: #2c3e50;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+
+        // 1. Initialisation de la carte centrée sur la Roumanie
+        const map = L.map('map').setView([45.9432, 24.9668], 7);
+
+        // 2. Fond de carte
+        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // 3. Groupes de calques (Interface Unique Écrevisses + Contours)
+        const contourGroup = L.layerGroup().addTo(map);
+        const nativesGroup = L.layerGroup().addTo(map);
+        const invasivesGroup = L.layerGroup().addTo(map);
+
+        // Tableau global pour stocker la liste des marqueurs afin de les faire bouger
+        let allCrayfishMarkers = [];
+        let simulationInterval = null;
+        let isSimulating = false;
+
+        // --- CHARGEMENT DU CONTOUR DU PAYS ---
+        fetch(`${API_URL}/contours`)
+            .then(res => res.json())
+            .then(geojsonData => {
+                L.geoJSON(geojsonData, {
+                    style: { color: "#2C3E50", weight: 2, fillOpacity: 0.05, dashArray: "5, 5" }
+                }).addTo(contourGroup);
+            })
+            .catch(err => console.error("Erreur contours:", err));
+
+        // --- CHARGEMENT ET TRI DES ÉCREVISSES ---
+        fetch(`${API_URL}/points`)
+            .then(res => res.json())
+            .then(geojsonData => {
+                
+                // Traitement des Écrevisses Natives
+                L.geoJSON(geojsonData, {
+                    filter: function(f) { return f.properties.Status && f.properties.Status.trim() === "Native"; },
+                    pointToLayer: function (f, latlng) {
+                       const marker = L.circle(latlng, {
+                        radius: 500, fillColor: "#2ECC71", color: "#FFFFFF", weight: 1, fillOpacity: 0.9
+                        });
+                        // Sauvegarde des propriétés et du type pour le simulateur
+                        marker.crayfishData = { ...f.properties, type: 'Native' };
+                        allCrayfishMarkers.push(marker);
+                        return marker;
+                    },
+                    onEachFeature: setupPopup
+                }).addTo(nativesGroup);
+
+                // Traitement des Écrevisses Invasives (Alien)
+                L.geoJSON(geojsonData, {
+                    filter: function(f) { return f.properties.Status && f.properties.Status.trim() === "Alien"; },
+                    pointToLayer: function (f, latlng) {
+                       const marker = L.circle(latlng, {
+                            radius: 500, fillColor: "#E74C3C", color: "#FFFFFF", weight: 1, fillOpacity: 0.9
+                        });
+                        marker.crayfishData = { ...f.properties, type: 'Alien' };
+                        allCrayfishMarkers.push(marker);
+                        return marker;
+                    },
+                    onEachFeature: setupPopup
+                }).addTo(invasivesGroup);
+
+            })
+            .catch(err => console.error("Erreur points:", err));
+
+        // Fonction pour générer le contenu du Popup
+        function setupPopup(feature, layer) {
+            updateMarkerPopup(layer, feature.properties.altitude || "Clique ou simule pour charger");
+        }
+
+        // Met à jour dynamiquement le contenu de la bulle avec l'altitude en temps réel
+        function updateMarkerPopup(layer, altValue) {
+            const data = layer.crayfishData || {};
+            const altText = altValue !== "Clique ou simule pour charger" ? `${altValue} m` : altValue;
+            
+            const content = `
+                <div style="font-family: Arial, sans-serif; min-width: 200px;">
+                    <h4 style="margin: 0 0 8px 0; color: #2C3E50;">Données d'Observation</h4>
+                    <strong>ID :</strong> ${data.WoCid || 'N/A'}<br>
+                    <strong>Espèce :</strong> <i>${data.Crayfish_scientific_name || 'Inconnue'}</i><br>
+                    <strong>Statut :</strong> ${data.Status || 'Non spécifié'}<br>
+                    <strong>Pathogène :</strong> ${data.Pathogen_symbiont_scientific_name || 'Aucun'}<br>
+                    <hr style="margin: 8px 0; border: 0; border-top: 1px solid #ddd;">
+                    <strong style="color: #2980B9;">Altitude (MNT 30m) :</strong> <span class="alt-holder">${altText}</span>
+                </div>
+            `;
+            layer.bindPopup(content);
+        }
+
+        // --- MOTEUR DE SIMULATION DE DÉPLACEMENT ---
+        function toggleSimulation() {
+            const btn = document.getElementById('simBtn');
+            
+            if (isSimulating) {
+                // Arrêt du simulateur
+                clearInterval(simulationInterval);
+                btn.innerHTML = "Démarrer la Simulation 🚀";
+                btn.style.background = "#2C3E50";
+                isSimulating = false;
+            } else {
+                // Démarrage du simulateur
+                btn.innerHTML = "Arrêter la Simulation 🛑";
+                btn.style.background = "#E74C3C";
+                isSimulating = true;
+
+                // Exécution des mouvements toutes les 2 secondes (2000ms)
+                simulationInterval = setInterval(() => {
+                    allCrayfishMarkers.forEach(marker => {
+                        const currentLatLng = marker.getLatLng();
+                        
+                        // Paramètres de vitesse de déplacement (les Aliens vont plus vite)
+                        const step = marker.crayfishData.type === 'Alien' ? 0.015 : 0.005;
+
+                        // Calcul d'un déplacement aléatoire (Nord/Sud/Est/Ouest)
+                        const newLat = currentLatLng.lat + (Math.random() - 0.5) * step;
+                        const newLng = currentLatLng.lng + (Math.random() - 0.5) * step;
+                        const newLatLng = L.latLng(newLat, newLng);
+
+                        // On applique la nouvelle position au marqueur sur la carte
+                        marker.setLatLng(newLatLng);
+
+                        // Appel asynchrone à ton API Raster pour récupérer la nouvelle altitude du pixel survolé
+                        fetch(`${API_URL}/elevation?lat=${newLat}&lng=${newLng}`)
+                            .then(res => res.json())
+                            .then(data => {
+                                const altitudeInterrogée = data.altitude !== null ? data.altitude : "Hors-zone";
+                                // On rafraîchit le popup de l'écrevisses avec sa nouvelle altitude
+                                updateMarkerPopup(marker, altitudeInterrogée);
+                            })
+                            .catch(err => console.error("Erreur MAF altitude simulation:", err));
+                    });
+                }, 2000);
+            }
+        }
+
+        // --- INTERACTION CLIC SUR LA CARTE (RASTER DIRECT) ---
+        map.on('click', function(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+
+            fetch(`${API_URL}/elevation?lat=${lat}&lng=${lng}`)
+                .then(res => res.json())
+                .then(data => {
+                    let message = data.altitude !== null ? `<strong>Altitude :</strong> ${data.altitude} m` : `<i>Hors de la zone du modèle numérique de terrain</i>`;
+
+                    L.popup({ className: 'elevation-popup' })
+                        .setLatLng(e.latlng)
+                        .setContent(`
+                            <div style="text-align: center; padding: 3px;">
+                                <span style="font-size: 11px; opacity: 0.8;">Clic terrain : ${lat.toFixed(4)}, ${lng.toFixed(4)}</span><br>
+                                <span style="font-size: 14px;">${message}</span>
+                            </div>
+                        `)
+                        .openOn(map);
+                })
+                .catch(err => console.error("Erreur clic altitude:", err));
+        });
+
+        // --- AJOUT DES INTERFACES DE CONTRÔLE SUR LA CARTE ---
+
+        // 1. Bouton personnalisé pour lancer/couper le Simulateur (En bas à gauche)
+        const SimControl = L.Control.extend({
+            options: { position: 'bottomleft' },
+            onAdd: function () {
+                const container = L.DomUtil.create('div', 'sim-control');
+                container.innerHTML = `<button id="simBtn" class="sim-btn" onclick="toggleSimulation()">Démarrer la Simulation 🚀</button>`;
+                return container;
+            }
+        });
+        map.addControl(new SimControl());
+
+        // 2. Gestionnaire d'affichage des Couches (En haut à droite)
+        const baseMaps = { "Fond OSM": osmLayer };
+        const overlayMaps = {
+            "Limites Roumanie": contourGroup,
+            "Écrevisses Natives 🟢": nativesGroup,
+            "Écrevisses Invasives (Alien) 🔴": invasivesGroup
+        };
+        L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
+
+    </script>
+</body>
+</html>
