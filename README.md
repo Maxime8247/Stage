@@ -62,7 +62,7 @@ Stage/
 
 ├── Rapport/
 
-│   └── Rapport\_stage.pdf
+│   └── Rapport_stage.odt
 
 │
 
